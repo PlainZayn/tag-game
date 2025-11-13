@@ -1,37 +1,69 @@
 const http = require("http");
-const { Server } = require("colyseus");
+const { Server, Room } = require("colyseus");
 const { WebSocketTransport } = require("@colyseus/ws-transport");
 const { Schema, type, ArraySchema, MapSchema } = require("@colyseus/schema");
 
 // Game State Schema
 class Player extends Schema {
-  @type("number") x;
-  @type("number") y;
-  @type("number") vx;
-  @type("number") vy;
-  @type("boolean") isIt;
-  @type("number") itTime;
-  @type("string") color;
-  @type("string") id;
-  @type("boolean") onGround;
-  @type("number") jumps;
-  @type("boolean") left;
-  @type("boolean") right;
-  @type("boolean") jump;
-  @type("boolean") down;
-  @type("number") tagCooldown;
+  constructor() {
+    super();
+    this.x = 0;
+    this.y = 0;
+    this.vx = 0;
+    this.vy = 0;
+    this.isIt = false;
+    this.itTime = 0;
+    this.color = "#ffffff";
+    this.id = "";
+    this.onGround = false;
+    this.jumps = 2;
+    this.left = false;
+    this.right = false;
+    this.jump = false;
+    this.down = false;
+    this.tagCooldown = 0;
+    this.jumpPressed = false;
+  }
 }
+
+// runtime type declarations (for plain JS)
+type("number")(Player.prototype, "x");
+type("number")(Player.prototype, "y");
+type("number")(Player.prototype, "vx");
+type("number")(Player.prototype, "vy");
+type("boolean")(Player.prototype, "isIt");
+type("number")(Player.prototype, "itTime");
+type("string")(Player.prototype, "color");
+type("string")(Player.prototype, "id");
+type("boolean")(Player.prototype, "onGround");
+type("number")(Player.prototype, "jumps");
+type("boolean")(Player.prototype, "left");
+type("boolean")(Player.prototype, "right");
+type("boolean")(Player.prototype, "jump");
+type("boolean")(Player.prototype, "down");
+type("number")(Player.prototype, "tagCooldown");
+type("boolean")(Player.prototype, "jumpPressed");
 
 class GameState extends Schema {
-  @type("number") elapsed;
-  @type("number") timeLimit;
-  @type("boolean") finished;
-  @type("number") p1Time;
-  @type("number") p2Time;
-  @type(MapSchema(Player)) players;
+  constructor() {
+    super();
+    this.elapsed = 0;
+    this.timeLimit = 90;
+    this.finished = false;
+    this.p1Time = 0;
+    this.p2Time = 0;
+    this.players = new MapSchema();
+  }
 }
 
-class TagRoom extends Server.Room {
+type("number")(GameState.prototype, "elapsed");
+type("number")(GameState.prototype, "timeLimit");
+type("boolean")(GameState.prototype, "finished");
+type("number")(GameState.prototype, "p1Time");
+type("number")(GameState.prototype, "p2Time");
+type({ map: Player })(GameState.prototype, "players");
+
+class TagRoom extends Room {
   onCreate(options) {
     this.setState(new GameState());
     this.state.elapsed = 0;
@@ -82,49 +114,10 @@ class TagRoom extends Server.Room {
       p.tagCooldown = 0;
       return p;
     };
-
-    this.on("join", (client, options) => {
-      console.log(`Client ${client.sessionId} joined`);
-
-      if (this.clients.length === 1) {
-        const p1 = createPlayer(140, 420, options.p1Color || "#9b59b6");
-        p1.id = client.sessionId;
-        p1.isIt = true;
-        this.state.players.set("player1", p1);
-        this.p1Client = client;
-      } else if (this.clients.length === 2) {
-        const p2 = createPlayer(760, 420, options.p2Color || "#f1c40f");
-        p2.id = client.sessionId;
-        p2.isIt = false;
-        this.state.players.set("player2", p2);
-        this.p2Client = client;
-
-        // Start game when both players join
-        this.startGame();
-      }
-    });
-
-    this.on("leave", (client) => {
-      console.log(`Client ${client.sessionId} left`);
-      if (client === this.p1Client) {
-        this.state.players.delete("player1");
-      } else if (client === this.p2Client) {
-        this.state.players.delete("player2");
-      }
-    });
-
-    this.on("message", (client, message) => {
-      if (message.type === "input" && this.state.players) {
-        const playerKey = client === this.p1Client ? "player1" : "player2";
-        const player = this.state.players.get(playerKey);
-        if (player) {
-          player.left = message.left || false;
-          player.right = message.right || false;
-          player.jump = message.jump || false;
-          player.down = message.down || false;
-        }
-      }
-    });
+    // expose helpers on `this` so lifecycle methods can access them
+    this.platforms = platforms;
+    this.canvas = canvas;
+    this.createPlayer = createPlayer;
 
     this.startGame = () => {
       this.gameStarted = true;
@@ -292,15 +285,104 @@ class TagRoom extends Server.Room {
     };
   }
 
+  onJoin(client, options) {
+    console.log(`Client ${client.sessionId} joined`);
+
+    if (this.clients.length === 1) {
+      const p1 = this.createPlayer(140, 420, options.p1Color || "#9b59b6");
+      p1.id = client.sessionId;
+      p1.isIt = true;
+      this.state.players.set("player1", p1);
+      this.p1Client = client;
+    } else if (this.clients.length === 2) {
+      const p2 = this.createPlayer(760, 420, options.p2Color || "#f1c40f");
+      p2.id = client.sessionId;
+      p2.isIt = false;
+      this.state.players.set("player2", p2);
+      this.p2Client = client;
+
+      // Start game when both players join
+      this.startGame();
+    }
+  }
+
+  onLeave(client) {
+    console.log(`Client ${client.sessionId} left`);
+    if (this.p1Client && client.sessionId === this.p1Client.sessionId) {
+      this.state.players.delete("player1");
+      this.p1Client = null;
+    } else if (this.p2Client && client.sessionId === this.p2Client.sessionId) {
+      this.state.players.delete("player2");
+      this.p2Client = null;
+    }
+  }
+
+  onMessage(client, message) {
+    if (message && message.type === "input" && this.state.players) {
+      const playerKey = (this.p1Client && client.sessionId === this.p1Client.sessionId) ? "player1" : "player2";
+      const player = this.state.players.get(playerKey);
+      if (player) {
+        player.left = message.left || false;
+        player.right = message.right || false;
+        player.jump = message.jump || false;
+        player.down = message.down || false;
+      }
+    }
+  }
+
   onDispose() {
     console.log("Room disposed");
   }
 }
 
+// create an HTTP server and attach WebSocket transport to it
+const httpServer = http.createServer();
+
 const gameServer = new Server({
-  transport: new WebSocketTransport({ port: 2567 }),
+  transport: new WebSocketTransport({ server: httpServer }),
 });
 
 gameServer.define("tag_game", TagRoom);
 
-console.log("Colyseus server running on ws://localhost:2567");
+const PORT = process.env.PORT || 2567;
+// log incoming HTTP requests so matchmaking calls are visible
+httpServer.on('request', (req, res) => {
+  // Only act on Colyseus matchmake endpoints to avoid interfering with WebSocket upgrade
+  if (!req.url || !req.url.startsWith('/matchmake')) return;
+
+  const origin = req.headers.origin || req.headers.Origin;
+
+  // Wrap writeHead so we can inject CORS headers just before response is sent.
+  const originalWriteHead = res.writeHead;
+  res.writeHead = function () {
+    try {
+      if (!res.getHeader('Access-Control-Allow-Origin')) {
+        if (origin) {
+          res.setHeader('Access-Control-Allow-Origin', origin);
+          res.setHeader('Access-Control-Allow-Credentials', 'true');
+        } else {
+          res.setHeader('Access-Control-Allow-Origin', 'http://localhost:8080');
+        }
+        res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      }
+    } catch (e) {
+      // ignore
+    }
+    return originalWriteHead.apply(this, arguments);
+  };
+
+  console.log(`[HTTP] ${req.method} ${req.url}`);
+
+  if (req.method === 'OPTIONS') {
+    if (!res.headersSent) {
+      res.writeHead(204);
+      res.end();
+    }
+    return;
+  }
+});
+
+httpServer.listen(PORT, () => {
+  console.log(`Colyseus server running on ws://localhost:${PORT}`);
+});

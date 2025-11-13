@@ -6,10 +6,12 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js"
+    ,"serve": "npx http-server . -p 8080"
   },
   "dependencies": {
     "colyseus": "^0.14.20",
-    "http": "^0.0.1-security",
+    "@colyseus/ws-transport": "^0.14.0",
+    "@colyseus/schema": "^1.0.45",
     "ws": "^8.13.0"
   },
   "devDependencies": {
