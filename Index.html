@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Local Tag — Custom Match Reset</title>
+<title>Multiplayer Tag Game</title>
+<script src="https://cdn.jsdelivr.net/npm/colyseus.js"></script>
 <style>
   html,body{height:100%;margin:0;background:red;color:#e6eef8;font-family:system-ui,sans-serif;}
   .overlay{
@@ -60,7 +61,7 @@
 </div>
 
 <script>
-(() => {
+(async () => {
   const canvas=document.getElementById("game");
   const ctx=canvas.getContext("2d");
   const container=document.getElementById("gameContainer");
@@ -80,11 +81,14 @@
     {x:520,y:120,w:160,h:20},
   ];
 
-  function makePlayer(x,y,color,label){
-    return {x,y,w:28,h:40,vx:0,vy:0,onGround:false,jumps:2,jumpPressed:false,left:false,right:false,jump:false,down:false,color,label,isIt:false,itTime:0,tagCooldown:0};
-  }
+  let room=null;
+  let playerId=null;
+  let p1=null,p2=null;
+  let elapsed=0,finished=false,lastTime=performance.now();
+  let myPlayerNumber=null;
 
-  let p1,p2,elapsed=0,finished=false,lastTime=performance.now();
+  // Connect to Colyseus server
+  const client=new Colyseus.Client("ws://localhost:2567");
 
   const keys={};
   window.addEventListener("keydown",e=>{
@@ -99,81 +103,78 @@
   });
 
   function handleKey(k,v){
-    if(p1 && p2){
-      if(k==="a")p1.left=v;if(k==="d")p1.right=v;if(k==="w")p1.jump=v;if(k==="s")p1.down=v;
-      if(k==="arrowleft")p2.left=v;if(k==="arrowright")p2.right=v;if(k==="arrowup")p2.jump=v;if(k==="arrowdown")p2.down=v;
+    if(room && myPlayerNumber){
+      if(myPlayerNumber===1){
+        if(k==="a")room.send("input",{left:v,right:false,jump:false,down:false});
+        if(k==="d")room.send("input",{left:false,right:v,jump:false,down:false});
+        if(k==="w")room.send("input",{left:false,right:false,jump:v,down:false});
+        if(k==="s")room.send("input",{left:false,right:false,jump:false,down:v});
+      }else{
+        if(k==="arrowleft")room.send("input",{left:v,right:false,jump:false,down:false});
+        if(k==="arrowright")room.send("input",{left:false,right:v,jump:false,down:false});
+        if(k==="arrowup")room.send("input",{left:false,right:false,jump:v,down:false});
+        if(k==="arrowdown")room.send("input",{left:false,right:false,jump:false,down:v});
+      }
     }
   }
 
   startBtn.onclick=startMatch;
   restartBtn.onclick=goToMenu;
 
-  function startMatch(){
-    GAME_SECONDS=parseInt(timeInput.value);
-    p1=makePlayer(140,420,p1ColorInput.value,"P1");
-    p2=makePlayer(760,420,p2ColorInput.value,"P2");
-    p1.isIt=Math.random()<0.5;p2.isIt=!p1.isIt;
-    elapsed=0;finished=false;lastTime=performance.now();
-    menu.style.display="none"; container.style.display="flex";
-    requestAnimationFrame(loop);
+  async function startMatch(){
+    try{
+      GAME_SECONDS=parseInt(timeInput.value);
+      room=await client.joinOrCreate("tag_game",{timeLimit:GAME_SECONDS,p1Color:p1ColorInput.value,p2Color:p2ColorInput.value});
+      playerId=room.sessionId;
+
+      room.state.players.onAdd=(player,key)=>{
+        console.log("Player joined:",key,player);
+      };
+
+      room.state.players.onChange=(player,key)=>{
+        if(key==="player1"){
+          p1={
+            x:player.x,y:player.y,w:28,h:40,vx:player.vx,vy:player.vy,
+            color:player.color,label:"P1",isIt:player.isIt,itTime:player.itTime
+          };
+          if(playerId===player.id)myPlayerNumber=1;
+        }else if(key==="player2"){
+          p2={
+            x:player.x,y:player.y,w:28,h:40,vx:player.vx,vy:player.vy,
+            color:player.color,label:"P2",isIt:player.isIt,itTime:player.itTime
+          };
+          if(playerId===player.id)myPlayerNumber=2;
+        }
+      };
+
+      room.state.onChange=()=>{
+        elapsed=room.state.elapsed;
+        finished=room.state.finished;
+        if(finished && !document.hidden){
+          setTimeout(()=>{
+            let msg=`Time's up!\n\nP1 It: ${room.state.p1Time.toFixed(2)}s\nP2 It: ${room.state.p2Time.toFixed(2)}s\n\n`;
+            if(Math.abs(room.state.p1Time-room.state.p2Time)<0.05)msg+="Draw!";
+            else if(room.state.p1Time<room.state.p2Time)msg+="Player 1 wins!";
+            else msg+="Player 2 wins!";
+            alert(msg);
+          },100);
+        }
+      };
+
+      elapsed=0;finished=false;lastTime=performance.now();
+      menu.style.display="none"; container.style.display="flex";
+      requestAnimationFrame(loop);
+    }catch(e){
+      console.error("Failed to join game:",e);
+      alert("Failed to connect to server. Make sure the server is running on ws://localhost:2567");
+    }
   }
 
   function goToMenu(){
     menu.style.display="flex";
     container.style.display="none";
+    if(room){room.leave();}
     p1=null; p2=null;
-  }
-
-  function rectsOverlap(a,b){return a.x<a.w+b.x && a.x+a.w>b.x && a.y<a.h+b.y && a.y+a.h>b.y;}
-
-  function updatePlayer(p,dt){
-    if(p.jump && p.jumps>0 && !p.jumpPressed){p.vy=-JUMP_SPEED;p.jumps--;p.jumpPressed=true;}
-    if(!p.jump)p.jumpPressed=false;
-
-    let target=0;if(p.left)target-=MOVE_SPEED;if(p.right)target+=MOVE_SPEED;
-    if(p.vx<target)p.vx=Math.min(target,p.vx+ACCEL*dt);
-    else if(p.vx>target)p.vx=Math.max(target,p.vx-ACCEL*dt);
-    else if(!p.left&&!p.right){if(Math.abs(p.vx)<FRICTION*dt)p.vx=0; else p.vx+=(p.vx>0?-1:1)*FRICTION*dt;}
-    p.x+=p.vx*dt;
-
-    let gravityApplied=GRAVITY;if(p.down && !p.onGround) gravityApplied*=FAST_FALL_MULT;
-    p.vy+=gravityApplied*dt; p.y+=p.vy*dt;
-
-    p.onGround=false;
-    for(const pl of platforms){
-      if(p.x+p.w>pl.x && p.x<pl.x+pl.w){
-        if(p.y+p.h>pl.y && p.y<pl.y+pl.h){
-          if(p.vy>0 && (p.y+p.h - p.vy*dt)<=pl.y+5){p.y=pl.y-p.h;p.vy=0;p.onGround=true;p.jumps=2;}
-          else if(p.vy<0 && (p.y - p.vy*dt)>=pl.y+pl.h-5){p.y=pl.y+pl.h;p.vy=0;}
-        }
-      }
-    }
-
-    if(p.x<0){p.x=0;p.vx=0;} if(p.x+p.w>canvas.width){p.x=canvas.width-p.w;p.vx=0;}
-    if(p.y>canvas.height+100){p.x=Math.random()*canvas.width;p.y=40;p.vx=p.vy=0;p.jumps=2;}
-    if(p.tagCooldown>0)p.tagCooldown-=dt;
-  }
-
-  function attemptTag(itP,other){
-    if(rectsOverlap(itP,other) && itP.tagCooldown<=0 && other.tagCooldown<=0){
-      itP.isIt=false;other.isIt=true;itP.tagCooldown=other.tagCooldown=TAG_COOLDOWN;
-      itP.vy=-150;other.vy=-220;
-    }
-  }
-
-  function update(dt){
-    if(finished || !p1 || !p2)return;
-    elapsed+=dt;updatePlayer(p1,dt);updatePlayer(p2,dt);
-    if(p1.isIt)attemptTag(p1,p2);if(p2.isIt)attemptTag(p2,p1);
-    if(p1.isIt)p1.itTime+=dt;if(p2.isIt)p2.itTime+=dt;
-    if(elapsed>=GAME_SECONDS){
-      finished=true;
-      let msg=`Time's up!\n\nP1 It: ${p1.itTime.toFixed(2)}s\nP2 It: ${p2.itTime.toFixed(2)}s\n\n`;
-      if(Math.abs(p1.itTime-p2.itTime)<0.05)msg+="Draw!";
-      else if(p1.itTime<p2.itTime)msg+="Player 1 wins!";
-      else msg+="Player 2 wins!";
-      setTimeout(()=>alert(msg),100);
-    }
   }
 
   function draw(){
@@ -189,8 +190,9 @@
 
     ctx.fillStyle="#fff";ctx.font="14px monospace";
     ctx.fillText(`Time left: ${(GAME_SECONDS-elapsed).toFixed(1)}s`,10,22);
-    ctx.fillText(`P1 It: ${p1.itTime.toFixed(1)}s`,10,42);
-    ctx.fillText(`P2 It: ${p2.itTime.toFixed(1)}s`,10,62);
+    ctx.fillText(`P1 It: ${(room?.state?.p1Time||0).toFixed(1)}s`,10,42);
+    ctx.fillText(`P2 It: ${(room?.state?.p2Time||0).toFixed(1)}s`,10,62);
+    ctx.fillText(`You are: P${myPlayerNumber}`,10,82);
   }
 
   function drawPlayer(p){
@@ -203,8 +205,7 @@
 
   function loop(ts){
     if(!p1 || !p2)return;
-    let dt=(ts-lastTime)/1000;if(dt>0.05)dt=0.05;lastTime=ts;
-    update(dt);draw();requestAnimationFrame(loop);
+    draw();requestAnimationFrame(loop);
   }
 })();
 </script>
