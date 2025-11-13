@@ -361,13 +361,14 @@ gameServer.define("tag_game", TagRoom);
 const PORT = process.env.PORT || 2567;
 
 // Normalize CORS responses so browser credentials work during local dev
-const allowedOriginsRaw = process.env.CORS_ALLOWED_ORIGINS || process.env.ALLOWED_ORIGINS || 'http://localhost:8080';
+const DEFAULT_LOCAL_ORIGIN = 'http://localhost:8080';
+const allowedOriginsRaw = process.env.CORS_ALLOWED_ORIGINS || process.env.ALLOWED_ORIGINS || '';
 const allowedOrigins = allowedOriginsRaw
   .split(',')
   .map((origin) => origin.trim())
   .filter(Boolean);
-const allowAllOrigins = allowedOrigins.includes('*');
-const fallbackOrigin = allowedOrigins.find((origin) => origin !== '*') || 'http://localhost:8080';
+const allowAllOrigins = allowedOrigins.length === 0 || allowedOrigins.includes('*');
+const fallbackOrigin = allowedOrigins.find((origin) => origin !== '*') || DEFAULT_LOCAL_ORIGIN;
 const corsAllowMethods = process.env.CORS_ALLOW_METHODS || 'GET,POST,PUT,DELETE,OPTIONS';
 const corsAllowHeaders = process.env.CORS_ALLOW_HEADERS || 'Content-Type, Authorization, X-Requested-With';
 
@@ -375,7 +376,7 @@ const pickOrigin = (requestOrigin) => {
   if (!requestOrigin) {
     return fallbackOrigin;
   }
-  if (allowAllOrigins || allowedOrigins.length === 0) {
+  if (allowAllOrigins) {
     return requestOrigin;
   }
   return allowedOrigins.includes(requestOrigin) ? requestOrigin : fallbackOrigin;

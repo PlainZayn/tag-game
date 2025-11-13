@@ -34,6 +34,8 @@
   <label>Player 1 Color: <input type="color" id="p1Color" value="#9b59b6"></label>
   <label>Player 2 Color: <input type="color" id="p2Color" value="#f1c40f"></label>
   <label>Match Time (seconds): <input type="number" id="timeLimit" min="30" max="300" value="90"></label>
+  <label>Server Host: <input type="text" id="serverHost" placeholder="192.168.1.214"></label>
+  <label>Server Port: <input type="number" id="serverPort" min="1" max="65535" value="2567"></label>
   <button id="startBtn">Start Match</button>
 </div>
 
@@ -72,6 +74,8 @@
   const p1ColorInput=document.getElementById("p1Color");
   const p2ColorInput=document.getElementById("p2Color");
   const timeInput=document.getElementById("timeLimit");
+  const serverHostInput=document.getElementById("serverHost");
+  const serverPortInput=document.getElementById("serverPort");
 
   let GAME_SECONDS=90;
   const GRAVITY=1800,MOVE_SPEED=360,ACCEL=2800,FRICTION=2400,JUMP_SPEED=650,TAG_COOLDOWN=0.4,FAST_FALL_MULT=2.5;
@@ -82,6 +86,8 @@
     {x:520,y:120,w:160,h:20},
   ];
 
+  let client=null;
+  let clientEndpoint="";
   let room=null;
   let playerId=null;
   let p1=null,p2=null;
@@ -91,8 +97,29 @@
   let animationId=null;
   const inputState={left:false,right:false,jump:false,down:false};
 
-  // Connect to Colyseus server
-  const client=new Colyseus.Client("ws://localhost:2567");
+  const defaultServerHost=localStorage.getItem("tagServerHost") || window.location.hostname || "localhost";
+  const defaultServerPort=localStorage.getItem("tagServerPort") || "2567";
+  serverHostInput.value=defaultServerHost;
+  serverPortInput.value=defaultServerPort;
+
+  const getServerEndpoint=()=>{
+    const host=(serverHostInput.value.trim()||defaultServerHost).replace(/^https?:\/\//,"");
+    const port=serverPortInput.value.trim()||defaultServerPort;
+    const protocol=window.location.protocol === "https:" ? "wss" : "ws";
+    return `${protocol}://${host}:${port}`;
+  };
+
+  const ensureClient=()=>{
+    const endpoint=getServerEndpoint();
+    if(!client || clientEndpoint!==endpoint){
+      client=new Colyseus.Client(endpoint);
+      clientEndpoint=endpoint;
+    }
+    const host=(serverHostInput.value.trim()||defaultServerHost);
+    const port=serverPortInput.value.trim()||defaultServerPort;
+    localStorage.setItem("tagServerHost",host);
+    localStorage.setItem("tagServerPort",port);
+  };
 
   const keys={};
   window.addEventListener("keydown",e=>{
@@ -146,6 +173,7 @@
   async function startMatch(){
     try{
       GAME_SECONDS=parseInt(timeInput.value);
+      ensureClient();
       room=await client.joinOrCreate("tag_game",{timeLimit:GAME_SECONDS,p1Color:p1ColorInput.value,p2Color:p2ColorInput.value});
       playerId=room.sessionId;
       clearInputState();
