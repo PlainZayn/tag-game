@@ -4,7 +4,8 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Multiplayer Tag Game</title>
-<script src="https://cdn.jsdelivr.net/npm/colyseus.js"></script>
+<!-- Pin client library to 0.14.x to match server-side Colyseus 0.14 -->
+<script src="https://cdn.jsdelivr.net/npm/colyseus.js@0.14.13/dist/colyseus.js"></script>
 <style>
   html,body{height:100%;margin:0;background:red;color:#e6eef8;font-family:system-ui,sans-serif;}
   .overlay{
@@ -86,6 +87,9 @@
   let p1=null,p2=null;
   let elapsed=0,finished=false,lastTime=performance.now();
   let myPlayerNumber=null;
+  let waitingForOpponent=true;
+  let animationId=null;
+  const inputState={left:false,right:false,jump:false,down:false};
 
   // Connect to Colyseus server
   const client=new Colyseus.Client("ws://localhost:2567");
@@ -102,19 +106,37 @@
     handleKey(e.key.toLowerCase(),false);
   });
 
-  function handleKey(k,v){
+  const sendInput=()=>{
     if(room && myPlayerNumber){
-      if(myPlayerNumber===1){
-        if(k==="a")room.send("input",{left:v,right:false,jump:false,down:false});
-        if(k==="d")room.send("input",{left:false,right:v,jump:false,down:false});
-        if(k==="w")room.send("input",{left:false,right:false,jump:v,down:false});
-        if(k==="s")room.send("input",{left:false,right:false,jump:false,down:v});
-      }else{
-        if(k==="arrowleft")room.send("input",{left:v,right:false,jump:false,down:false});
-        if(k==="arrowright")room.send("input",{left:false,right:v,jump:false,down:false});
-        if(k==="arrowup")room.send("input",{left:false,right:false,jump:v,down:false});
-        if(k==="arrowdown")room.send("input",{left:false,right:false,jump:false,down:v});
-      }
+      room.send("input",{...inputState});
+    }
+  };
+
+  const setInput=(key,value)=>{
+    if(inputState[key]===value)return;
+    inputState[key]=value;
+    sendInput();
+  };
+
+  const clearInputState=()=>{
+    inputState.left=false;
+    inputState.right=false;
+    inputState.jump=false;
+    inputState.down=false;
+  };
+
+  function handleKey(k,v){
+    if(!room || !myPlayerNumber)return;
+    if(myPlayerNumber===1){
+      if(k==="a")return setInput("left",v);
+      if(k==="d")return setInput("right",v);
+      if(k==="w")return setInput("jump",v);
+      if(k==="s")return setInput("down",v);
+    }else{
+      if(k==="arrowleft")return setInput("left",v);
+      if(k==="arrowright")return setInput("right",v);
+      if(k==="arrowup")return setInput("jump",v);
+      if(k==="arrowdown")return setInput("down",v);
     }
   }
 
@@ -126,28 +148,32 @@
       GAME_SECONDS=parseInt(timeInput.value);
       room=await client.joinOrCreate("tag_game",{timeLimit:GAME_SECONDS,p1Color:p1ColorInput.value,p2Color:p2ColorInput.value});
       playerId=room.sessionId;
+      clearInputState();
 
-      room.state.players.onAdd=(player,key)=>{
-        console.log("Player joined:",key,player);
+      const snapshotPlayer=(player,label)=>({
+        x:player.x,y:player.y,w:28,h:40,vx:player.vx,vy:player.vy,
+        color:player.color,label,isIt:player.isIt,itTime:player.itTime,
+      });
+
+      const refreshPlayersFromState=()=>{
+        const player1=room.state.players.get("player1");
+        const player2=room.state.players.get("player2");
+
+        p1=player1 ? snapshotPlayer(player1,"P1") : null;
+        p2=player2 ? snapshotPlayer(player2,"P2") : null;
+
+        if(player1 && playerId===player1.id)myPlayerNumber=1;
+        if(player2 && playerId===player2.id)myPlayerNumber=2;
+
+        waitingForOpponent=!(p1 && p2);
       };
 
-      room.state.players.onChange=(player,key)=>{
-        if(key==="player1"){
-          p1={
-            x:player.x,y:player.y,w:28,h:40,vx:player.vx,vy:player.vy,
-            color:player.color,label:"P1",isIt:player.isIt,itTime:player.itTime
-          };
-          if(playerId===player.id)myPlayerNumber=1;
-        }else if(key==="player2"){
-          p2={
-            x:player.x,y:player.y,w:28,h:40,vx:player.vx,vy:player.vy,
-            color:player.color,label:"P2",isIt:player.isIt,itTime:player.itTime
-          };
-          if(playerId===player.id)myPlayerNumber=2;
-        }
-      };
+      room.state.players.onAdd=()=>refreshPlayersFromState();
+
+      room.state.players.onRemove=()=>refreshPlayersFromState();
 
       room.state.onChange=()=>{
+        refreshPlayersFromState();
         elapsed=room.state.elapsed;
         finished=room.state.finished;
         if(finished && !document.hidden){
@@ -162,8 +188,10 @@
       };
 
       elapsed=0;finished=false;lastTime=performance.now();
+      refreshPlayersFromState();
       menu.style.display="none"; container.style.display="flex";
-      requestAnimationFrame(loop);
+      if(animationId)cancelAnimationFrame(animationId);
+      loop();
     }catch(e){
       console.error("Failed to join game:",e);
       alert("Failed to connect to server. Make sure the server is running on ws://localhost:2567");
@@ -173,12 +201,15 @@
   function goToMenu(){
     menu.style.display="flex";
     container.style.display="none";
-    if(room){room.leave();}
+    if(room){room.leave();room=null;}
     p1=null; p2=null;
+    waitingForOpponent=true;
+    if(animationId){cancelAnimationFrame(animationId);animationId=null;}
+    clearInputState();
+    myPlayerNumber=null;
   }
 
   function draw(){
-    if(!p1 || !p2)return;
     ctx.clearRect(0,0,canvas.width,canvas.height);
     ctx.save();ctx.globalAlpha=0.05;ctx.fillStyle="#fff";
     for(let gx=0;gx<canvas.width;gx+=40)ctx.fillRect(gx,0,1,canvas.height);
@@ -186,13 +217,28 @@
     ctx.restore();
 
     ctx.fillStyle="#0f2533";for(const pl of platforms)ctx.fillRect(pl.x,pl.y,pl.w,pl.h);
-    drawPlayer(p1);drawPlayer(p2);
+    if(p1)drawPlayer(p1);
+    if(p2)drawPlayer(p2);
 
     ctx.fillStyle="#fff";ctx.font="14px monospace";
     ctx.fillText(`Time left: ${(GAME_SECONDS-elapsed).toFixed(1)}s`,10,22);
     ctx.fillText(`P1 It: ${(room?.state?.p1Time||0).toFixed(1)}s`,10,42);
     ctx.fillText(`P2 It: ${(room?.state?.p2Time||0).toFixed(1)}s`,10,62);
-    ctx.fillText(`You are: P${myPlayerNumber}`,10,82);
+    ctx.fillText(`You are: P${myPlayerNumber||"?"}`,10,82);
+
+    if(waitingForOpponent){
+      ctx.save();
+      ctx.fillStyle="rgba(0,0,0,0.65)";
+      ctx.fillRect(0,0,canvas.width,canvas.height);
+      ctx.fillStyle="#ffd166";
+      ctx.font="28px 'Trebuchet MS',sans-serif";
+      ctx.textAlign="center";
+      ctx.fillText("Waiting for second player...",canvas.width/2,canvas.height/2);
+      ctx.font="16px monospace";
+      ctx.fillStyle="#fff";
+      ctx.fillText("Share the room link to invite a friend",canvas.width/2,canvas.height/2+32);
+      ctx.restore();
+    }
   }
 
   function drawPlayer(p){
@@ -203,9 +249,9 @@
     ctx.restore();
   }
 
-  function loop(ts){
-    if(!p1 || !p2)return;
-    draw();requestAnimationFrame(loop);
+  function loop(){
+    draw();
+    animationId=requestAnimationFrame(loop);
   }
 })();
 </script>

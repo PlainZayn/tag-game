@@ -119,6 +119,33 @@ class TagRoom extends Room {
     this.canvas = canvas;
     this.createPlayer = createPlayer;
 
+    const getPlayerForClient = (client) => {
+      let target = null;
+      this.state.players.forEach((player) => {
+        if (!target && player.id === client.sessionId) {
+          target = player;
+        }
+      });
+      return target;
+    };
+
+    // Listen for client input messages per session
+    this.onMessage("input", (client, message = {}) => {
+      if (!this.state.players) {
+        return;
+      }
+
+      const player = getPlayerForClient(client);
+      if (!player) {
+        return;
+      }
+
+      player.left = !!message.left;
+      player.right = !!message.right;
+      player.jump = !!message.jump;
+      player.down = !!message.down;
+    });
+
     this.startGame = () => {
       this.gameStarted = true;
       this.lastUpdate = Date.now();
@@ -317,19 +344,6 @@ class TagRoom extends Room {
     }
   }
 
-  onMessage(client, message) {
-    if (message && message.type === "input" && this.state.players) {
-      const playerKey = (this.p1Client && client.sessionId === this.p1Client.sessionId) ? "player1" : "player2";
-      const player = this.state.players.get(playerKey);
-      if (player) {
-        player.left = message.left || false;
-        player.right = message.right || false;
-        player.jump = message.jump || false;
-        player.down = message.down || false;
-      }
-    }
-  }
-
   onDispose() {
     console.log("Room disposed");
   }
@@ -345,41 +359,123 @@ const gameServer = new Server({
 gameServer.define("tag_game", TagRoom);
 
 const PORT = process.env.PORT || 2567;
-// log incoming HTTP requests so matchmaking calls are visible
-httpServer.on('request', (req, res) => {
-  // Only act on Colyseus matchmake endpoints to avoid interfering with WebSocket upgrade
-  if (!req.url || !req.url.startsWith('/matchmake')) return;
 
-  const origin = req.headers.origin || req.headers.Origin;
+// Normalize CORS responses so browser credentials work during local dev
+const allowedOriginsRaw = process.env.CORS_ALLOWED_ORIGINS || process.env.ALLOWED_ORIGINS || 'http://localhost:8080';
+const allowedOrigins = allowedOriginsRaw
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+const allowAllOrigins = allowedOrigins.includes('*');
+const fallbackOrigin = allowedOrigins.find((origin) => origin !== '*') || 'http://localhost:8080';
+const corsAllowMethods = process.env.CORS_ALLOW_METHODS || 'GET,POST,PUT,DELETE,OPTIONS';
+const corsAllowHeaders = process.env.CORS_ALLOW_HEADERS || 'Content-Type, Authorization, X-Requested-With';
 
-  // Wrap writeHead so we can inject CORS headers just before response is sent.
-  const originalWriteHead = res.writeHead;
-  res.writeHead = function () {
-    try {
-      if (!res.getHeader('Access-Control-Allow-Origin')) {
-        if (origin) {
-          res.setHeader('Access-Control-Allow-Origin', origin);
-          res.setHeader('Access-Control-Allow-Credentials', 'true');
-        } else {
-          res.setHeader('Access-Control-Allow-Origin', 'http://localhost:8080');
-        }
-        res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-      }
-    } catch (e) {
-      // ignore
+const pickOrigin = (requestOrigin) => {
+  if (!requestOrigin) {
+    return fallbackOrigin;
+  }
+  if (allowAllOrigins || allowedOrigins.length === 0) {
+    return requestOrigin;
+  }
+  return allowedOrigins.includes(requestOrigin) ? requestOrigin : fallbackOrigin;
+};
+
+httpServer.prependListener('request', (req, res) => {
+  const requestOrigin = req.headers.origin;
+  const origin = pickOrigin(requestOrigin);
+
+  const originalSetHeader = res.setHeader.bind(res);
+  res.setHeader = function (name, value) {
+    if (!name) {
+      return originalSetHeader(name, value);
     }
-    return originalWriteHead.apply(this, arguments);
+
+    const key = typeof name === 'string' ? name.toLowerCase() : name;
+    if (key === 'access-control-allow-origin') {
+      const nextValue = value && value !== '*' ? value : origin;
+      return originalSetHeader(name, nextValue);
+    }
+    if (key === 'access-control-allow-credentials') {
+      return originalSetHeader(name, 'true');
+    }
+    if (key === 'vary') {
+      const varyValue = Array.isArray(value) ? value.join(',') : String(value || '');
+      if (!varyValue.toLowerCase().split(',').map((v) => v.trim()).includes('origin')) {
+        return originalSetHeader(name, `${varyValue ? `${varyValue}, ` : ''}Origin`);
+      }
+    }
+
+    return originalSetHeader(name, value);
   };
 
-  console.log(`[HTTP] ${req.method} ${req.url}`);
-
-  if (req.method === 'OPTIONS') {
-    if (!res.headersSent) {
-      res.writeHead(204);
-      res.end();
+  const ensureCorsHeaders = () => {
+    if (!res.getHeader('Access-Control-Allow-Origin')) {
+      originalSetHeader('Access-Control-Allow-Origin', origin);
     }
-    return;
+    if (!res.getHeader('Access-Control-Allow-Credentials')) {
+      originalSetHeader('Access-Control-Allow-Credentials', 'true');
+    }
+    if (!res.getHeader('Access-Control-Allow-Methods')) {
+      originalSetHeader('Access-Control-Allow-Methods', corsAllowMethods);
+    }
+    if (!res.getHeader('Access-Control-Allow-Headers')) {
+      originalSetHeader('Access-Control-Allow-Headers', corsAllowHeaders);
+    }
+    const varyHeader = res.getHeader('Vary');
+    if (!varyHeader) {
+      originalSetHeader('Vary', 'Origin');
+    }
+  };
+
+  const originalWriteHead = res.writeHead.bind(res);
+  res.writeHead = function (statusCode, statusMessage, headers) {
+    let msg = statusMessage;
+    let hdrs = headers;
+
+    if (typeof msg === 'object' && hdrs === undefined) {
+      hdrs = msg;
+      msg = undefined;
+    }
+
+    if (hdrs) {
+      Object.keys(hdrs).forEach((headerName) => {
+        const lower = headerName.toLowerCase();
+        if (lower === 'access-control-allow-origin' && hdrs[headerName] === '*') {
+          hdrs[headerName] = origin;
+        }
+        if (lower === 'access-control-allow-credentials') {
+          hdrs[headerName] = 'true';
+        }
+        if (lower === 'vary') {
+          const varyValue = String(hdrs[headerName] || '');
+          if (!varyValue.toLowerCase().split(',').map((v) => v.trim()).includes('origin')) {
+            hdrs[headerName] = `${varyValue ? `${varyValue}, ` : ''}Origin`;
+          }
+        }
+      });
+    }
+
+    ensureCorsHeaders();
+
+    if (msg !== undefined && hdrs !== undefined) {
+      return originalWriteHead.call(this, statusCode, msg, hdrs);
+    }
+    if (hdrs !== undefined) {
+      return originalWriteHead.call(this, statusCode, hdrs);
+    }
+    if (msg !== undefined) {
+      return originalWriteHead.call(this, statusCode, msg);
+    }
+    return originalWriteHead.call(this, statusCode);
+  };
+
+  ensureCorsHeaders();
+
+  if (requestOrigin) {
+    console.log(`[HTTP] ${req.method} ${req.url} from ${requestOrigin}`);
+  } else {
+    console.log(`[HTTP] ${req.method} ${req.url} (no origin header)`);
   }
 });
 
