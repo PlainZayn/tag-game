@@ -76,6 +76,22 @@
   const timeInput=document.getElementById("timeLimit");
   const serverHostInput=document.getElementById("serverHost");
   const serverPortInput=document.getElementById("serverPort");
+  const bgMusic=new Audio("Neon_Dystopia_Overdrive.mp3");
+  bgMusic.loop=true;
+  bgMusic.volume=0.35;
+
+  const startBackgroundMusic=async()=>{
+    try{
+      await bgMusic.play();
+    }catch(err){
+      console.warn("Background music could not start automatically:",err);
+    }
+  };
+
+  const stopBackgroundMusic=()=>{
+    bgMusic.pause();
+    bgMusic.currentTime=0;
+  };
 
   let GAME_SECONDS=90;
   const GRAVITY=1800,MOVE_SPEED=360,ACCEL=2800,FRICTION=2400,JUMP_SPEED=650,TAG_COOLDOWN=0.4,FAST_FALL_MULT=2.5;
@@ -172,6 +188,7 @@
 
   async function startMatch(){
     try{
+      await startBackgroundMusic();
       GAME_SECONDS=parseInt(timeInput.value);
       ensureClient();
       room=await client.joinOrCreate("tag_game",{timeLimit:GAME_SECONDS,p1Color:p1ColorInput.value,p2Color:p2ColorInput.value});
@@ -229,6 +246,7 @@
   function goToMenu(){
     menu.style.display="flex";
     container.style.display="none";
+    stopBackgroundMusic();
     if(room){room.leave();room=null;}
     p1=null; p2=null;
     waitingForOpponent=true;
